@@ -1,124 +1,150 @@
-import os
-from datetime import datetime, timedelta
+"""
+backend/app.py  – Flask + Dex OIDC + NYT + comments
+---------------------------------------------------
+* NY Times endpoint SAME AS BEFORE; nothing that could break article loading
+* Dex host split:
+      BROWSER  →  http://localhost:5556
+      BACKEND  →  http://dex:5556   (Docker service name)
+Docker-compose must expose “dex:5556:5556”.
+"""
 
-import requests
-from authlib.common.security import generate_token
-from authlib.integrations.flask_client import OAuth
+import os, datetime, requests
 from dotenv import load_dotenv
-from flask import (
-    Flask, jsonify, redirect, send_from_directory,
-    session, url_for
-)
+from flask import Flask, jsonify, request, redirect, session, send_from_directory
 from flask_cors import CORS
+from authlib.integrations.flask_client import OAuth
+from authlib.common.security import generate_token
+from pymongo import MongoClient
+from bson.objectid import ObjectId
 
-load_dotenv()                                      
-app = Flask(__name__,
-            static_folder="static",           
-            template_folder="templates")          
-app.secret_key = os.getenv("FLASK_SECRET",
-                            os.urandom(24))       
+load_dotenv()
 
-CORS(app, resources={r"/*": {"origins": [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173"
-]}})
+# ─────────── Flask / CORS ───────────────────────────────────────────────
+app = Flask(__name__, static_folder="static", template_folder="templates")
+app.secret_key = os.getenv("FLASK_SECRET", "dev-secret")
+CORS(app, supports_credentials=True,
+     resources={r"/*": {"origins": [
+         "http://localhost:5173", "http://127.0.0.1:5173"]}})
 
+# ─────────── Mongo (comments) ───────────────────────────────────────────
+mongo      = MongoClient(os.getenv("MONGO_URL", "mongodb://mongo:27017"))
+comments   = mongo.hw3.comments
+
+# ─────────── OAuth / Dex (split hosts) ─────────────────────────────────
 oauth = OAuth(app)
-OAUTH_CLIENT_NAME = os.getenv("OIDC_CLIENT_NAME", "dex")
+
+DEX_INTERNAL = "http://dex:5556"        # used by backend inside containers
+DEX_BROWSER  = "http://localhost:5556"  # used by browser
 
 oauth.register(
-    name=OAUTH_CLIENT_NAME,
-    client_id=os.getenv("OIDC_CLIENT_ID"),
-    client_secret=os.getenv("OIDC_CLIENT_SECRET"),
-    authorization_endpoint=os.getenv(
-        "OIDC_AUTHORIZATION_ENDPOINT", "http://localhost:5556/auth"),
-    token_endpoint=os.getenv(
-        "OIDC_TOKEN_ENDPOINT", "http://dex:5556/token"),
-    jwks_uri=os.getenv(
-        "OIDC_JWKS_URI", "http://dex:5556/keys"),
-    userinfo_endpoint=os.getenv(
-        "OIDC_USERINFO_ENDPOINT", "http://dex:5556/userinfo"),
-    device_authorization_endpoint=os.getenv(
-        "OIDC_DEVICE_ENDPOINT", "http://dex:5556/device/code"),
-    client_kwargs={"scope": "openid email profile"},
+    name="dex",
+    client_id="flask-app",
+    client_secret="flask-secret",
+    authorize_url      = f"{DEX_BROWSER}/auth",     # browser
+    access_token_url   = f"{DEX_INTERNAL}/token",   # backend
+    userinfo_endpoint  = f"{DEX_INTERNAL}/userinfo",
+    jwks_uri           = f"{DEX_INTERNAL}/keys",
+    api_base_url       = DEX_INTERNAL,
+    client_kwargs      = {"scope": "openid email profile"},
 )
 
-_nonce = generate_token()
+nonce = generate_token()
 
-def _client():
-    """Return the configured OAuth client."""
-    return getattr(oauth, OAUTH_CLIENT_NAME)
-
-@app.route("/api/key")
-def get_key():
-    """Provide the NYT key to the front end (dev convenience)."""
-    return jsonify({"apiKey": os.getenv("NYT_API_KEY")})
-
-@app.route("/api/local-news")
-def get_local_news():
-    """Proxy NYT Article Search API for Davis/Sacramento stories."""
+# ─────────── NY Times article-search API (unchanged) ───────────────────
+@app.get("/api/local-news")
+def local_news():
     api_key = os.getenv("NYT_API_KEY")
     if not api_key:
-        return jsonify({"error": "API key not found"}), 500
+        return jsonify({"error": "NYT_API_KEY missing"}), 500
 
-    end_date = datetime.now().strftime("%Y%m%d")
-    begin_date = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
-
+    end   = datetime.datetime.now()
+    begin = end - datetime.timedelta(days=365)
     params = {
         "q": "Sacramento (Calif) OR Davis (Calif)",
         "api-key": api_key,
-        "begin_date": begin_date,
-        "end_date": end_date,
+        "begin_date": begin.strftime("%Y%m%d"),
+        "end_date":   end.strftime("%Y%m%d"),
     }
-
     try:
-        resp = requests.get(
+        r = requests.get(
             "https://api.nytimes.com/svc/search/v2/articlesearch.json",
-            params=params,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return jsonify(resp.json())
+            params=params, timeout=10)
+        r.raise_for_status()
+        return jsonify(r.json())
     except requests.RequestException as exc:
-        return jsonify({"error": str(exc)}), 500
+        app.logger.error("NYT fetch failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 502
 
-@app.route("/login")
+# ─────────── Comment API (same as before) ──────────────────────────────
+def tree(flat):
+    lookup = {str(c["_id"]): {**c, "id": str(c["_id"]), "children": []} for c in flat}
+    root   = []
+    for c in lookup.values():
+        pid = c.get("parent_id")
+        (lookup[pid]["children"] if pid in lookup else root).append(c)
+    return root
+
+@app.get("/api/comments/<path:aid>")
+def get_comments(aid):
+    return jsonify(tree(list(comments.find({"article_id": aid}))))
+
+@app.post("/api/comments/<path:aid>")
+def post_comment(aid):
+    if "user" not in session:
+        return "", 401
+    body = request.get_json(force=True) or {}
+    txt  = body.get("content", "").strip()
+    if not txt:
+        return "", 400
+    comments.insert_one({
+        "article_id": aid,
+        "content":    txt,
+        "parent_id":  body.get("parent_id"),
+        "user_name":  session["user"]["email"],
+        "created_at": datetime.datetime.utcnow()
+    })
+    return "", 201
+
+@app.delete("/api/comments/<cid>")
+def delete_comment(cid):
+    if "user" not in session:
+        return "", 401
+    comments.delete_one({
+        "_id": ObjectId(cid),
+        "user_name": session["user"]["email"]
+    })
+    return "", 204
+
+# ─────────── OIDC flow ────────────────────────────────────────────────
+@app.get("/login")
 def login():
-    """Start Dex login and redirect back to /authorize."""
-    session["nonce"] = _nonce
-    redirect_uri = url_for("authorize", _external=True)
-    return _client().authorize_redirect(redirect_uri, nonce=_nonce)
+    session["nonce"] = nonce
+    return oauth.dex.authorize_redirect(
+        redirect_uri="http://localhost:8000/authorize",
+        nonce=nonce
+    )
 
-@app.route("/authorize")
+@app.get("/authorize")
 def authorize():
-    """OAuth2 callback – store user info in session."""
-    token = _client().authorize_access_token()
-    user_info = _client().parse_id_token(token, nonce=session.get("nonce"))
-    session["user"] = user_info
-    return redirect("/") 
+    token = oauth.dex.authorize_access_token()
+    info  = oauth.dex.parse_id_token(token, nonce=session.pop("nonce"))
+    session["user"] = info
+    # hand e-mail back to SPA
+    return redirect(f"http://localhost:5173?user={info['email']}")
 
-@app.route("/logout")
+@app.get("/logout")
 def logout():
-    """Clear session and return to SPA."""
     session.clear()
-    return redirect("/")
+    return redirect("http://localhost:5173")
 
-@app.route("/", defaults={"path": ""})
-@app.route("/<path:path>")
-def serve_frontend(path: str):
-    """
-    In prod: serve compiled Svelte assets.
+# ─────────── SPA static files (for production) ────────────────────────
+@app.get("/")
+@app.get("/<path:path>")
+def spa(path=""):
+    if path and os.path.exists(f"static/{path}"):
+        return send_from_directory("static", path)
+    return send_from_directory("templates", "index.html")
 
-    In dev: this route is rarely hit because the SPA is on Vite’s
-    http://localhost:5173, but keeping it here lets prod work with one command
-    (`docker-compose.prod.yml up`).
-    """
-    if path and os.path.exists(os.path.join(app.static_folder, path)):
-        return send_from_directory(app.static_folder, path)
-
-    return send_from_directory(app.template_folder, "index.html")
-
+# ─────────── run ──────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(host="0.0.0.0",
-            port=int(os.environ.get("PORT", 8000)),
-            debug=bool(os.environ.get("FLASK_DEBUG", "1")))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000)), debug=True)
