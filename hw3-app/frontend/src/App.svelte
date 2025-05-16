@@ -1,14 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  // import svelteLogo from './assets/svelte.svg';
-  // import viteLogo from '/vite.svg';
-  // import Counter from './lib/Counter.svelte';
 
   let apiKey: string = '';
   let today = '';
   let articles: any[] = [];
   let imageArticles: any[] = [];
-  const dexURL = "http://127.0.0.1:5556/auth?client_id=example-app&redirect_uri=http://localhost:3000/callback&response_type=code&scope=openid%20email";
+  let showTab: boolean = false;
+  let isAuthenticated: boolean = true;
+  let accessToken: string | null = null;
+  let email: string | null = '';
 
   function getImage(article: any): string | null {
     if (article?.multimedia?.default?.url) {
@@ -20,7 +20,13 @@
   }
 
   function redirectToDex() {
+    // const dexURL = "http://127.0.0.1:5556/auth?client_id=example-app&redirect_uri=http://localhost:3000/callback&response_type=code&scope=openid%20email";
+    const dexURL = "http://localhost:8000/login"
     window.location.href = dexURL;
+  }
+
+  function toggleSideTab() {
+    showTab = !showTab;
   }
 
   onMount(async () => {
@@ -31,6 +37,9 @@
       day: 'numeric',
       year: 'numeric',
     });
+
+    const url = new URL(window.location.href);
+    email = url.searchParams.get('user');
 
     try {
       const res = await fetch('http://localhost:8000/api/local-news');
@@ -46,7 +55,14 @@
 <main>
   <header>
     <div class="top-right">
-      <button class="button" on:click={redirectToDex}>LOG IN</button>
+      {#if !isAuthenticated}
+        <button class="button" on:click={redirectToDex}>LOG IN</button>
+      {:else}
+        <button class="account" on:click={toggleSideTab}>
+          <img src="/account.svg" alt="account tab"/>
+        </button>
+
+      {/if}
     </div>
     <div class="date">
       <p><b>{today}</b><br/> Today’s Paper</p>
@@ -54,10 +70,17 @@
     </div>
     <br>
     <div class="logo-image">
-      <img src="/NYTimeslogo.png" alt="The New York Times" />
+      <img src="/NYTimeslogo.png" alt="The New York Times"/>
     </div>
     <hr style="margin: 1% 2% 2% 2%; width: 95%" />
   </header>
+
+  {#if showTab}
+    <aside class="sidebar">
+      <p><strong>{email}</strong></p>
+      <h1>Good Afternoon.</h1>
+    </aside>
+  {/if}
 
   {#if imageArticles.length > 0}
     <div class="main-container">
