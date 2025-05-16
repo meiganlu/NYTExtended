@@ -1,51 +1,69 @@
-from flask import Flask, redirect, url_for, session, jsonify, send_from_directory
-from authlib.integrations.flask_client import OAuth
-from authlib.common.security import generate_token
 import os
-import requests
-from flask_cors import CORS
-from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
-app = Flask(__name__)
-app.secret_key = os.urandom(24)
+import requests
+from authlib.common.security import generate_token
+from authlib.integrations.flask_client import OAuth
+from dotenv import load_dotenv
+from flask import (
+    Flask, jsonify, redirect, send_from_directory,
+    session, url_for
+)
+from flask_cors import CORS
+
+load_dotenv()                                      
+app = Flask(__name__,
+            static_folder="static",           
+            template_folder="templates")          
+app.secret_key = os.getenv("FLASK_SECRET",
+                            os.urandom(24))       
+
+CORS(app, resources={r"/*": {"origins": [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
+]}})
 
 oauth = OAuth(app)
-
-nonce = generate_token()
-
-load_dotenv() 
-
-app = Flask(__name__, static_folder="static", template_folder="templates")
-CORS(app, resources={r"/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}})
+OAUTH_CLIENT_NAME = os.getenv("OIDC_CLIENT_NAME", "dex")
 
 oauth.register(
-    name=os.getenv('OIDC_CLIENT_NAME'),
-    client_id=os.getenv('OIDC_CLIENT_ID'),
-    client_secret=os.getenv('OIDC_CLIENT_SECRET'),
-    #server_metadata_url='http://dex:5556/.well-known/openid-configuration',
-    authorization_endpoint="http://localhost:5556/auth",
-    token_endpoint="http://dex:5556/token",
-    jwks_uri="http://dex:5556/keys",
-    userinfo_endpoint="http://dex:5556/userinfo",
-    device_authorization_endpoint="http://dex:5556/device/code",
-    client_kwargs={'scope': 'openid email profile'}
+    name=OAUTH_CLIENT_NAME,
+    client_id=os.getenv("OIDC_CLIENT_ID"),
+    client_secret=os.getenv("OIDC_CLIENT_SECRET"),
+    authorization_endpoint=os.getenv(
+        "OIDC_AUTHORIZATION_ENDPOINT", "http://localhost:5556/auth"),
+    token_endpoint=os.getenv(
+        "OIDC_TOKEN_ENDPOINT", "http://dex:5556/token"),
+    jwks_uri=os.getenv(
+        "OIDC_JWKS_URI", "http://dex:5556/keys"),
+    userinfo_endpoint=os.getenv(
+        "OIDC_USERINFO_ENDPOINT", "http://dex:5556/userinfo"),
+    device_authorization_endpoint=os.getenv(
+        "OIDC_DEVICE_ENDPOINT", "http://dex:5556/device/code"),
+    client_kwargs={"scope": "openid email profile"},
 )
+
+_nonce = generate_token()
+
+def _client():
+    """Return the configured OAuth client."""
+    return getattr(oauth, OAUTH_CLIENT_NAME)
 
 @app.route("/api/key")
 def get_key():
+    """Provide the NYT key to the front end (dev convenience)."""
     return jsonify({"apiKey": os.getenv("NYT_API_KEY")})
 
 @app.route("/api/local-news")
 def get_local_news():
+    """Proxy NYT Article Search API for Davis/Sacramento stories."""
     api_key = os.getenv("NYT_API_KEY")
     if not api_key:
         return jsonify({"error": "API key not found"}), 500
 
-    end_date = datetime.now().strftime('%Y%m%d')
-    begin_date = (datetime.now() - timedelta(days=365)).strftime('%Y%m%d')  # Date up to 1 yr ago
+    end_date = datetime.now().strftime("%Y%m%d")
+    begin_date = (datetime.now() - timedelta(days=365)).strftime("%Y%m%d")
 
-    url = "https://api.nytimes.com/svc/search/v2/articlesearch.json"
     params = {
         "q": "Sacramento (Calif) OR Davis (Calif)",
         "api-key": api_key,
@@ -54,45 +72,53 @@ def get_local_news():
     }
 
     try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        return jsonify(response.json())
-    except requests.RequestException as e:
-        return jsonify({"error": str(e)}), 500
+        resp = requests.get(
+            "https://api.nytimes.com/svc/search/v2/articlesearch.json",
+            params=params,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return jsonify(resp.json())
+    except requests.RequestException as exc:
+        return jsonify({"error": str(exc)}), 500
 
-@app.route('/')
-def home():
-    user = session.get('user')
-    if user:
-        return f"<h2>Logged in as {user['email']}</h2><a href='/logout'>Logout</a>"
-    return '<a href="/login">Login with Dex</a>'
-
-@app.route('/login')
+@app.route("/login")
 def login():
-    session['nonce'] = nonce
-    redirect_uri = 'http://localhost:8000/authorize'
-    return oauth.flask_app.authorize_redirect(redirect_uri, nonce=nonce)
+    """Start Dex login and redirect back to /authorize."""
+    session["nonce"] = _nonce
+    redirect_uri = url_for("authorize", _external=True)
+    return _client().authorize_redirect(redirect_uri, nonce=_nonce)
 
-@app.route('/authorize')
+@app.route("/authorize")
 def authorize():
-    token = oauth.flask_app.authorize_access_token()
-    nonce = session.get('nonce')
+    """OAuth2 callback – store user info in session."""
+    token = _client().authorize_access_token()
+    user_info = _client().parse_id_token(token, nonce=session.get("nonce"))
+    session["user"] = user_info
+    return redirect("/") 
 
-    user_info = oauth.flask_app.parse_id_token(token, nonce=nonce)  # or use .get('userinfo').json()
-    session['user'] = user_info
-    return redirect('/')
-
-@app.route('/logout')
+@app.route("/logout")
 def logout():
+    """Clear session and return to SPA."""
     session.clear()
-    return redirect('/')
+    return redirect("/")
 
+@app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
-def serve_frontend(path=""):
-    if path != "" and os.path.exists(f"static/{path}"):
-        return send_from_directory("static", path)
-    return send_from_directory("templates", "index.html")
+def serve_frontend(path: str):
+    """
+    In prod: serve compiled Svelte assets.
 
+    In dev: this route is rarely hit because the SPA is on Vite’s
+    http://localhost:5173, but keeping it here lets prod work with one command
+    (`docker-compose.prod.yml up`).
+    """
+    if path and os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8000)
+    return send_from_directory(app.template_folder, "index.html")
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0",
+            port=int(os.environ.get("PORT", 8000)),
+            debug=bool(os.environ.get("FLASK_DEBUG", "1")))
