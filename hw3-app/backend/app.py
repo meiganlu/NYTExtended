@@ -6,6 +6,9 @@ Changes in this version
 ✓ Uses authenticated Mongo connection (reads MONGO_* env-vars)
 ✓ Still returns the same JSON and keeps every route & Dex flow
 ✓ 30-minute NY Times in-memory cache unchanged
+✓ Handles ObjectId serialization for comment retrieval
+✓ Added moderator capabilities for comment deletion
+✓ Improved error handling for comment operations
 """
 
 import os, datetime, requests, time
@@ -17,12 +20,15 @@ from authlib.integrations.flask_client import OAuth
 from authlib.common.security import generate_token
 from pymongo import MongoClient
 from bson.objectid import ObjectId
+from datetime import timedelta
 
 load_dotenv()
 
 # ─────────────── Flask / CORS ───────────────
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.secret_key = os.getenv("FLASK_SECRET", "dev-secret")
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)  # Session lasts 7 days
+
 CORS(app, supports_credentials=True,
      resources={r"/*": {"origins": ["http://localhost:5173",
                                    "http://127.0.0.1:5173"]}})
@@ -101,52 +107,102 @@ def local_news():
 
 # ----- comment helpers -----
 def build_tree(flat):
-    lookup = {str(c["_id"]): {**c, "id": str(c["_id"]), "children": []} for c in flat}
-    root = []
-    for c in lookup.values():
-        pid = c.get("parent_id")
-        (lookup[pid]["children"] if pid in lookup else root).append(c)
-    return root
+    """Build a tree structure from flat comment list with proper ID handling"""
+    try:
+        # Convert ObjectId to string for JSON serialization
+        for c in flat:
+            if '_id' in c:
+                c['_id'] = str(c['_id'])
+        
+        # Create lookup dictionary with string IDs
+        lookup = {str(c["_id"]): {**c, "id": str(c["_id"]), "children": []} for c in flat}
+        root = []
+        
+        # Build the tree structure
+        for c in lookup.values():
+            pid = c.get("parent_id")
+            if pid and pid in lookup:
+                lookup[pid]["children"].append(c)
+            else:
+                root.append(c)
+        
+        return root
+    except Exception as e:
+        app.logger.error(f"Error building comment tree: {e}")
+        return []  # Return empty array in case of errors
 
 
 @app.get("/api/comments/<path:aid>")
 def get_comments(aid):
-    return jsonify(build_tree(list(comments_col.find({"article_id": aid}))))
+    """Get comments for an article with error handling"""
+    try:
+        comments = list(comments_col.find({"article_id": aid}))
+        return jsonify(build_tree(comments))
+    except Exception as e:
+        app.logger.error(f"Error retrieving comments for {aid}: {e}")
+        return jsonify([]), 200  # Return empty array but don't fail
 
 
 @app.post("/api/comments/<path:aid>")
 def post_comment(aid):
+    """Add a new comment to an article"""
     if "user" not in session:
         return "", 401
+    
     body = request.get_json(force=True) or {}
     txt  = body.get("content", "").strip()
     if not txt:
         return "", 400
-    comments_col.insert_one({
-        "article_id": aid,
-        "content":    txt,
-        "parent_id":  body.get("parent_id"),
-        "user_name":  session["user"]["email"],
-        "created_at": datetime.datetime.utcnow()
-    })
-    return "", 201
+    
+    try:
+        comments_col.insert_one({
+            "article_id": aid,
+            "content":    txt,
+            "parent_id":  body.get("parent_id"),
+            "user_name":  session["user"]["email"],
+            "created_at": datetime.datetime.utcnow()
+        })
+        return "", 201
+    except Exception as e:
+        app.logger.error(f"Error posting comment: {e}")
+        return "", 500
 
 
 @app.delete("/api/comments/<cid>")
 def delete_comment(cid):
+    """Delete a comment - either your own or any if you're a moderator"""
     if "user" not in session:
         return "", 401
-    comments_col.delete_one({
-        "_id": ObjectId(cid),
-        "user_name": session["user"]["email"]
-    })
-    return "", 204
+    
+    try:
+        user_email = session["user"]["email"]
+        # Check if user is moderator (add your moderator emails here)
+        is_moderator = user_email in ["admin@hw3.com", "moderator@hw3.com"] 
+        
+        if is_moderator:
+            # Moderators can delete any comment
+            result = comments_col.delete_one({"_id": ObjectId(cid)})
+        else:
+            # Regular users can only delete their own comments
+            result = comments_col.delete_one({
+                "_id": ObjectId(cid),
+                "user_name": user_email
+            })
+        
+        if result.deleted_count == 0:
+            return "", 404  # Comment not found or not authorized
+        
+        return "", 204
+    except Exception as e:
+        app.logger.error(f"Error deleting comment: {e}")
+        return "", 500
 
 
 # ----- OIDC flow -----
 @app.get("/login")
 def login():
     session["nonce"] = generate_token()
+    session.permanent = True  # Make the session last longer
     return oauth.dex.authorize_redirect(
         redirect_uri="http://localhost:8000/authorize",
         nonce=session["nonce"]
@@ -158,6 +214,7 @@ def authorize():
     token = oauth.dex.authorize_access_token()
     info  = oauth.dex.parse_id_token(token, nonce=session.pop("nonce"))
     session["user"] = info
+    session.permanent = True  # Make the session last longer
     return redirect(f"http://localhost:5173?user={info['email']}")
 
 

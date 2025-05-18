@@ -19,18 +19,20 @@ services:
     working_dir: /app
     volumes:
       - ./backend:/app
+      - flask_sessions:/app/flask_sessions
     ports:
       - "${PORT-8000}:8000"
-    depends_on:
-      - mongo
-      - dex
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
              python -m flask run --host=0.0.0.0 --port=${PORT:-8000} --reload --debug"
     environment:
       FLASK_APP: app.py
-      # <-- matches credentials created in init-mongo.js
-      MONGO_URL: "mongodb://hw3user:hw3pass@mongo:27017/hw3?authSource=hw3"
+      MONGO_USER: hw3user
+      MONGO_PASS: hw3pass
+      MONGO_AUTH_DB: hw3
+    depends_on:
+      - mongo
+      - dex
     env_file:
       - .env
       - .env.dev
@@ -65,3 +67,4 @@ services:
 
 volumes:
   mongo_data:
+  flask_sessions:

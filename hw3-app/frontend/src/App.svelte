@@ -24,6 +24,9 @@
   const replyOpen:Record<string, boolean>   = {};
   const replyBox: Record<string, string>    = {};
 
+  // For showing comment counts on the home page
+  let commentCounts: Record<string, number> = {};
+
   function getImage(a: any): string | null {
     if (a?.multimedia?.default?.url)   return a.multimedia.default.url;
     if (a?.multimedia?.thumbnail?.url) return a.multimedia.thumbnail.url;
@@ -50,6 +53,22 @@
       const r = await fetch('/api/local-news', { credentials:'include' });
       const j = await r.json();
       imageArticles = (j.response?.docs || []).filter(getImage);
+      
+      // After loading articles, fetch comment counts for all articles
+      if (imageArticles.length > 0 && loggedIn()) {
+        await Promise.all(imageArticles.map(async (article) => {
+          if (article._id) {
+            await fetchCommentCount(article._id);
+          }
+        }));
+      }
+      
+      // Check for any article ID in localStorage to pre-load comments
+      const lastOpenDrawer = localStorage.getItem('openArticleDrawer');
+      if (lastOpenDrawer && loggedIn()) {
+        drawerOpen[lastOpenDrawer] = true;
+        await fetchComments(lastOpenDrawer);
+      }
     } catch (e) {
       loadError = 'Could not load news.';
       console.error(e);
@@ -57,47 +76,169 @@
   });
 
   /* ---------- comments CRUD ---------- */
-  async function fetchComments(aid:string) {
-    const safe = encodeURIComponent(aid);
-    const r = await fetch(`/api/comments/${safe}`, { credentials:'include' });
-    comments[aid] = await r.json();
+  async function fetchCommentCount(aid: string) {
+    try {
+      const safe = encodeURIComponent(aid);
+      const r = await fetch(`/api/comments/${safe}`, { credentials:'include' });
+      
+      if (r.ok) {
+        const commentsData = await r.json();
+        // Count total comments (including nested ones)
+        const countNestedComments = (comments: any[]): number => {
+          let count = comments.length;
+          for (const comment of comments) {
+            if (comment.children && comment.children.length) {
+              count += countNestedComments(comment.children);
+            }
+          }
+          return count;
+        };
+        
+        commentCounts[aid] = countNestedComments(commentsData);
+      }
+    } catch (error) {
+      console.error(`Failed to fetch comment count for ${aid}:`, error);
+      commentCounts[aid] = 0;
+    }
   }
-  async function post(aid:string,parentId:string|null,text:string) {
+  
+  async function fetchComments(aid: string) {
+    try {
+      const safe = encodeURIComponent(aid);
+      const r = await fetch(`/api/comments/${safe}`, { credentials:'include' });
+      
+      if (r.ok) {
+        const commentsData = await r.json();
+        comments[aid] = commentsData;
+        
+        // Update comment count as well
+        const countNestedComments = (comments: any[]): number => {
+          let count = comments.length;
+          for (const comment of comments) {
+            if (comment.children && comment.children.length) {
+              count += countNestedComments(comment.children);
+            }
+          }
+          return count;
+        };
+        
+        commentCounts[aid] = countNestedComments(commentsData);
+      } else {
+        console.error(`Error fetching comments: ${r.status}`);
+        comments[aid] = []; 
+        commentCounts[aid] = 0;
+      }
+    } catch (error) {
+      console.error('Failed to fetch comments:', error);
+      comments[aid] = []; 
+      commentCounts[aid] = 0;
+    }
+  }
+  
+  async function post(aid: string, parentId: string | null, text: string) {
     if (!loggedIn() || !text.trim()) return;
-    const safe = encodeURIComponent(aid);
-    await fetch(`/api/comments/${safe}`, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ content:text.trim(), parent_id:parentId }),
-      credentials:'include'
-    });
-    parentId ? replyBox[parentId] = '' : newTop[aid] = '';
-    await fetchComments(aid);
+    try {
+      const safe = encodeURIComponent(aid);
+      const r = await fetch(`/api/comments/${safe}`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ 
+          content: text.trim(), 
+          parent_id: parentId 
+        }),
+        credentials: 'include'
+      });
+      
+      if (r.ok) {
+        // Clear the input field
+        if (parentId) {
+          replyBox[parentId] = '';
+          // Close reply form after successful post
+          replyOpen[parentId] = false;
+        } else {
+          newTop[aid] = '';
+        }
+        
+        // Refresh comments
+        await fetchComments(aid);
+      } else {
+        console.error(`Error posting comment: ${r.status}`);
+        alert('Failed to post comment. Please try again.');
+      }
+    } catch (error) {
+      console.error('Failed to post comment:', error);
+      alert('Failed to post comment. Please try again.');
+    }
   }
-  async function handleDelete(cid:string, aid:string) {
+  
+  async function handleDelete(cid: string, aid: string) {
     if (!confirm('Delete this comment?')) return;
-    await fetch(`/api/comments/${cid}`, { method:'DELETE', credentials:'include' });
-    await fetchComments(aid);
+    try {
+      const r = await fetch(`/api/comments/${cid}`, { 
+        method: 'DELETE', 
+        credentials: 'include' 
+      });
+      
+      if (r.ok) {
+        await fetchComments(aid);
+      } else {
+        console.error(`Error deleting comment: ${r.status}`);
+        alert('Failed to delete comment. Please try again.');
+      }
+    } catch (error) {
+      console.error('Failed to delete comment:', error);
+      alert('Failed to delete comment. Please try again.');
+    }
   }
-  function handleReply(aid:string,cid:string,send=false) {
-    if (send) return post(aid,cid,replyBox[cid]);
-    replyOpen[cid] = !replyOpen[cid];
+  
+  function handleReply(aid: string, cid: string, send = false) {
+    if (send) {
+      post(aid, cid, replyBox[cid]);
+    } else {
+      // Toggle reply form visibility
+      replyOpen[cid] = !replyOpen[cid];
+      // Initialize reply box if not already set
+      if (!replyBox[cid]) {
+        replyBox[cid] = '';
+      }
+    }
   }
 
   /* ---------- drawer helpers ---------- */
-  function openDrawer(aid:string) {
+  function openDrawer(aid: string) {
     if (!loggedIn()) return;          // gate: only logged-in users
+    
+    // Close any other open drawers first
+    Object.keys(drawerOpen).forEach(key => {
+      if (drawerOpen[key] && key !== aid) {
+        drawerOpen[key] = false;
+      }
+    });
+    
     drawerOpen[aid] = true;
-    if (!comments[aid]) fetchComments(aid);
+    
+    // Store the open drawer ID in localStorage
+    localStorage.setItem('openArticleDrawer', aid);
+    
+    // Fetch comments if not already loaded
+    if (!comments[aid]) {
+      fetchComments(aid);
+    }
   }
-  const closeDrawer = (aid:string) => drawerOpen[aid] = false;
+  
+  function closeDrawer(aid: string) {
+    drawerOpen[aid] = false;
+    
+    // Clear the stored drawer ID when closing
+    localStorage.removeItem('openArticleDrawer');
+  }
 </script>
 
 <main>
   <!-- ───── Header ───── -->
   <header class="site-header">
     <div class="date">
-      <p><b>{today}</b><br/>Today’s Paper</p>
+      <p><b>{today}</b><br/>Today's Paper</p>
     </div>
 
     <img class="logo" src="/NYTimeslogo.png" alt="The New York Times" />
@@ -139,7 +280,7 @@
               <h2>{art.headline.main}</h2>
               <p>{art.abstract}</p>
               <button class="count-btn" on:click={() => openDrawer(art._id)}>
-                💬 {comments[art._id]?.length || 0}
+                💬 {commentCounts[art._id] || 0}
               </button>
             </article>
           {/if}
@@ -155,7 +296,7 @@
             <h1>{art.headline.main}</h1>
             <p>{art.abstract}</p>
             <button class="count-btn" on:click={() => openDrawer(art._id)}>
-              💬 {comments[art._id]?.length || 0}
+              💬 {commentCounts[art._id] || 0}
             </button>
           </article>
         {/if}
@@ -167,7 +308,7 @@
             <h3>{art.headline.main}</h3>
             <p>{art.abstract}</p>
             <button class="count-btn" on:click={() => openDrawer(art._id)}>
-              💬 {comments[art._id]?.length || 0}
+              💬 {commentCounts[art._id] || 0}
             </button>
           </article>
         {/if}
@@ -183,7 +324,7 @@
               <h2>{art.headline.main}</h2>
               <p>{art.abstract}</p>
               <button class="count-btn" on:click={() => openDrawer(art._id)}>
-                💬 {comments[art._id]?.length || 0}
+                💬 {commentCounts[art._id] || 0}
               </button>
             </article>
           {/if}
@@ -198,7 +339,7 @@
       <div class="overlay" on:click={() => closeDrawer(aid)}></div>
       <aside class="drawer">
         <button class="close" on:click={() => closeDrawer(aid)}>×</button>
-        <h2>{imageArticles.find(a=>a._id===aid)?.headline?.main || 'Comments'} ({comments[aid]?.length || 0})</h2>
+        <h2>{imageArticles.find(a=>a._id===aid)?.headline?.main || 'Comments'} ({commentCounts[aid] || 0})</h2>
 
         <div class="new-box">
           <textarea
@@ -209,7 +350,7 @@
           </textarea>
           <button
             class="post"
-            disabled={!loggedIn()}
+            disabled={!loggedIn() || !newTop[aid]?.trim()}
             on:click={() => post(aid,null,newTop[aid])}>
             Post
           </button>
@@ -222,7 +363,7 @@
               articleId={aid}
               depth={0}
               doDelete={(id)=>handleDelete(id,aid)}
-              doReply ={(id,send)=>handleReply(aid,id,send)}
+              doReply={(id,send)=>handleReply(aid,id,send)}
               {replyOpen} {replyBox} />
           {/each}
         {:else}

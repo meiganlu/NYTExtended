@@ -1,16 +1,21 @@
 <script lang="ts">
   export let c;                       // comment node
-  export let aid:string;              // article id
+  export let articleId:string;        // article id
   export let depth:number = 0;        // nesting depth
   export let replyOpen:Record<string,boolean>;
   export let replyBox: Record<string,string>;
 
   /* handlers received from parent */
-  export let doReply:(id:string,send:boolean)=>void;
+  export let doReply:(id:string, send:boolean)=>void;
   export let doDelete:(id:string)=>void;
+  
+  // Initialize reply box value if not already set
+  if (replyBox[c.id] === undefined) {
+    replyBox[c.id] = '';
+  }
 </script>
 
-<div class="comment" style="margin-left:{depth}rem">
+<div class="comment" style="margin-left:{depth * 1.5}rem">
   <!-- meta row -->
   <div class="meta">
     <span class="avatar">{c.user_name?.[0]?.toUpperCase() ?? '?'}</span>
@@ -23,20 +28,27 @@
   <p class="body">{c.content}</p>
 
   <!-- reply toggle -->
-  <button class="reply-link" on:click={()=>doReply(c.id,false)}>Reply</button>
+  <button class="reply-link" on:click={()=>doReply(c.id, false)}>Reply</button>
 
   <!-- reply box -->
   {#if replyOpen[c.id]}
     <div class="reply-box">
       <textarea rows="2" bind:value={replyBox[c.id]} placeholder="Reply…"/>
-      <button class="send" on:click={()=>doReply(c.id,true)}>Send</button>
+      <button 
+        class="send" 
+        disabled={!replyBox[c.id]?.trim()} 
+        on:click={()=>doReply(c.id, true)}>
+        Send
+      </button>
     </div>
   {/if}
 
   <!-- nested children -->
   {#if c.children && c.children.length}
     {#each c.children as child (child.id)}
-      <Comment c={child} {aid}
+      <svelte:self 
+        c={child} 
+        articleId={articleId}
         depth={depth+1}
         {replyOpen} {replyBox}
         {doReply} {doDelete}/>
@@ -57,4 +69,5 @@
 .reply-box{display:flex;gap:.4rem;margin-top:.4rem}
 .reply-box textarea{flex:1;border:1px solid #ccc;border-radius:4px;padding:.35rem;font-size:.83rem}
 .reply-box .send{background:#000;color:#fff;border:none;border-radius:4px;padding:.35rem .8rem;font-size:.75rem;cursor:pointer}
+.reply-box .send:disabled{background:#ccc;cursor:not-allowed}
 </style>
