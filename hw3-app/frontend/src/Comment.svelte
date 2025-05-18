@@ -1,51 +1,60 @@
 <script lang="ts">
-  export let comment: any;
-  export let articleId: string;
-  export let depth: number = 0;
+  export let c;                       // comment node
+  export let aid:string;              // article id
+  export let depth:number = 0;        // nesting depth
+  export let replyOpen:Record<string,boolean>;
+  export let replyBox: Record<string,string>;
 
-  export let doDelete: (id: string) => void;
-  export let doReply: (id: string, send?: boolean) => void;
-  export let replyOpen: Record<string, boolean>;
-  export let replyBox:  Record<string, string>;
+  /* handlers received from parent */
+  export let doReply:(id:string,send:boolean)=>void;
+  export let doDelete:(id:string)=>void;
 </script>
 
 <div class="comment" style="margin-left:{depth}rem">
+  <!-- meta row -->
   <div class="meta">
-    <strong>{comment.user_name}</strong>
-    <span>{new Date(comment.created_at).toLocaleString()}</span>
-    <button class="del" on:click={() => doDelete(comment.id)}>×</button>
+    <span class="avatar">{c.user_name?.[0]?.toUpperCase() ?? '?'}</span>
+    <span class="name">{c.user_name}</span>
+    <span class="time">{new Date(c.created_at).toLocaleString()}</span>
+    <button class="del" title="Delete" on:click={()=>doDelete(c.id)}>×</button>
   </div>
 
-  <p class="body">{comment.content}</p>
+  <!-- body -->
+  <p class="body">{c.content}</p>
 
-  <button class="reply-btn" on:click={() => doReply(comment.id)}>
-    {replyOpen[comment.id] ? 'Cancel' : 'Reply'}
-  </button>
+  <!-- reply toggle -->
+  <button class="reply-link" on:click={()=>doReply(c.id,false)}>Reply</button>
 
-  {#if replyOpen[comment.id]}
+  <!-- reply box -->
+  {#if replyOpen[c.id]}
     <div class="reply-box">
-      <textarea rows="2" bind:value={replyBox[comment.id]} />
-      <button on:click={() => doReply(comment.id, true)}>Send</button>
+      <textarea rows="2" bind:value={replyBox[c.id]} placeholder="Reply…"/>
+      <button class="send" on:click={()=>doReply(c.id,true)}>Send</button>
     </div>
   {/if}
 
-  {#each comment.children || [] as child}
-    <Comment
-      comment={child}
-      {articleId}
-      depth={depth + 1}
-      {doDelete}
-      {doReply}
-      {replyOpen}
-      {replyBox}/>
-  {/each}
+  <!-- nested children -->
+  {#if c.children && c.children.length}
+    {#each c.children as child (child.id)}
+      <Comment c={child} {aid}
+        depth={depth+1}
+        {replyOpen} {replyBox}
+        {doReply} {doDelete}/>
+    {/each}
+  {/if}
 </div>
 
 <style>
-  .comment   { border-left:2px solid #e5e7eb; padding-left:.75rem; margin-top:1rem; }
-  .meta      { font-size:.8rem; color:#555; display:flex; gap:.5rem; align-items:center; }
-  .del       { background:none; color:#c00; margin-left:auto; cursor:pointer; }
-  .reply-btn { background:none; color:#0a5; margin:.25rem 0; cursor:pointer; font-size:.8rem; }
-  .reply-box textarea{ width:100%; resize:vertical; padding:.3rem; border:1px solid #ccc; border-radius:.25rem; }
-  .reply-box button{ margin-top:.2rem; background:#0a5; color:#fff; padding:.2rem .6rem; border:none; border-radius:.25rem; cursor:pointer; font-size:.75rem; }
+.comment{font-size:.88rem;margin-top:1.1rem}
+.meta{display:flex;align-items:center;gap:.4rem;font-size:.75rem;color:#666;margin-bottom:.25rem}
+.avatar{display:inline-flex;align-items:center;justify-content:center;background:#ccc;color:#fff;
+  border-radius:50%;width:1.2rem;height:1.2rem;font-size:.7rem}
+.name{font-weight:700;color:#000}
+.time{font-size:.68rem}
+.del{margin-left:auto;background:none;border:none;font-size:1rem;line-height:1;color:#888;cursor:pointer}
+.body{margin:.35rem 0}
+.reply-link{background:none;border:none;color:#1158a6;font-size:.75rem;cursor:pointer}
+.reply-box{display:flex;gap:.4rem;margin-top:.4rem}
+.reply-box textarea{flex:1;border:1px solid #ccc;border-radius:4px;padding:.35rem;font-size:.83rem}
+.reply-box .send{background:#000;color:#fff;border:none;border-radius:4px;padding:.35rem .8rem;font-size:.75rem;cursor:pointer}
 </style>
