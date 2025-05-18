@@ -1,183 +1,229 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import Comment       from './Comment.svelte';
+  import Comment from './Comment.svelte';
 
-  /* ─── app state ─────────────────────────────────────────────────── */
-  let today            = '';
-  let imageArticles:any[] = [];
-  let loadError        = '';
+  /* ---------- article loading ---------- */
+  let today = '';
+  let imageArticles: any[] = [];
+  let loadError = '';
 
-  /*  dex / account state  */
-  let isAuthenticated  = false;
-  let email:string|null= null;
-  let showAccountTab   = false;
+  // Auth / account drawer state
+  let showAcct = false;
+  let email: string | null = '';
+  const loggedIn = () => !!email;          // helper
 
-  /*  per-article comment state (same as before)  */
-  type CommentT = { id:string; content:string; user_name:string;
-                    created_at:string; children?:CommentT[] };
-  const comments:Record<string,CommentT[]> = {};
-  const drawerOpen:Record<string,boolean>  = {};
-  const newTop:Record<string,string>       = {};
-  const replyOpen:Record<string,boolean>   = {};
-  const replyBox:Record<string,string>     = {};
+  /* ---------- comment system ---------- */
+  type CommentT = {
+    id: string; content: string; user_name: string;
+    created_at: string; children?: CommentT[];
+  };
 
-  /* ─── helpers ───────────────────────────────────────────────────── */
-  function getImage(a:any):string|null{
-    return a?.multimedia?.default?.url
-        ?? a?.multimedia?.thumbnail?.url
-        ?? null;
+  const comments: Record<string, CommentT[]> = {};
+  const drawerOpen: Record<string, boolean> = {};
+  const newTop:   Record<string, string>    = {};
+  const replyOpen:Record<string, boolean>   = {};
+  const replyBox: Record<string, string>    = {};
+
+  function getImage(a: any): string | null {
+    if (a?.multimedia?.default?.url)   return a.multimedia.default.url;
+    if (a?.multimedia?.thumbnail?.url) return a.multimedia.thumbnail.url;
+    return null;
   }
-  const redirectToDex = () =>
+
+  /* ---------- Dex helpers (UNCHANGED) ---------- */
+  function redirectToDex() {
     window.location.href = 'http://localhost:8000/login';
+  }
 
-  const toggleAccount = () => showAccountTab = !showAccountTab;
-
-  /* ─── lifecycle ─────────────────────────────────────────────────── */
-  onMount(async ()=>{
-    /* date */
+  /* ---------- lifecycle ---------- */
+  onMount(async () => {
+    // date
     today = new Date().toLocaleDateString('en-US',
       { weekday:'long', month:'long', day:'numeric', year:'numeric' });
 
-    /* dex callback?  read ?user=email@example.com */
+    // email comes back from backend redirect (?user=…)
     const url = new URL(window.location.href);
     email = url.searchParams.get('user');
-    isAuthenticated = !!email;
 
-    /* news */
-    try{
-      const r = await fetch('/api/local-news',{credentials:'include'});
+    // news
+    try {
+      const r = await fetch('/api/local-news', { credentials:'include' });
       const j = await r.json();
-      imageArticles = (j.response?.docs||[]).filter(getImage);
-    }catch(e){ loadError = 'Could not load news.'; console.error(e); }
+      imageArticles = (j.response?.docs || []).filter(getImage);
+    } catch (e) {
+      loadError = 'Could not load news.';
+      console.error(e);
+    }
   });
 
-  /* ─── comment api calls  (same as before, credentials:include) ─── */
-  async function fetchComments(aid:string){
+  /* ---------- comments CRUD ---------- */
+  async function fetchComments(aid:string) {
     const safe = encodeURIComponent(aid);
-    const r = await fetch(`/api/comments/${safe}`,{credentials:'include'});
+    const r = await fetch(`/api/comments/${safe}`, { credentials:'include' });
     comments[aid] = await r.json();
   }
-  async function post(aid:string,pid:string|null,txt:string){
-    if(!txt.trim()) return;
-    await fetch(`/api/comments/${encodeURIComponent(aid)}`,{
-      method:'POST',credentials:'include',
+  async function post(aid:string,parentId:string|null,text:string) {
+    if (!loggedIn() || !text.trim()) return;
+    const safe = encodeURIComponent(aid);
+    await fetch(`/api/comments/${safe}`, {
+      method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({content:txt.trim(),parent_id:pid})
+      body:JSON.stringify({ content:text.trim(), parent_id:parentId }),
+      credentials:'include'
     });
-    if(pid) replyBox[pid]=''; else newTop[aid]='';
-    fetchComments(aid);
+    parentId ? replyBox[parentId] = '' : newTop[aid] = '';
+    await fetchComments(aid);
   }
-  async function del(cid:string,aid:string){
-    await fetch(`/api/comments/${cid}`,{method:'DELETE',credentials:'include'});
-    fetchComments(aid);
+  async function handleDelete(cid:string, aid:string) {
+    if (!confirm('Delete this comment?')) return;
+    await fetch(`/api/comments/${cid}`, { method:'DELETE', credentials:'include' });
+    await fetchComments(aid);
   }
-  const reply = (aid:string,cid:string,send=false)=>{
-    if(send) post(aid,cid,replyBox[cid]);
-    else replyOpen[cid]=!replyOpen[cid];
-  };
-  const openDrawer  = (aid:string)=>{ drawerOpen[aid]=true; fetchComments(aid); };
-  const closeDrawer = (aid:string)=>{ drawerOpen[aid]=false; };
+  function handleReply(aid:string,cid:string,send=false) {
+    if (send) return post(aid,cid,replyBox[cid]);
+    replyOpen[cid] = !replyOpen[cid];
+  }
+
+  /* ---------- drawer helpers ---------- */
+  function openDrawer(aid:string) {
+    if (!loggedIn()) return;          // gate: only logged-in users
+    drawerOpen[aid] = true;
+    if (!comments[aid]) fetchComments(aid);
+  }
+  const closeDrawer = (aid:string) => drawerOpen[aid] = false;
 </script>
 
 <main>
-  <!-- ─── header ─────────────────────────────────────────────────── -->
+  <!-- ───── Header ───── -->
   <header class="site-header">
-    <!-- login / account on the very right -->
-    <div class="top-right">
-      {#if !isAuthenticated}
-        <button class="button" on:click={redirectToDex}>LOG&nbsp;IN</button>
-      {:else}
-        <button class="button" on:click={toggleAccount}>Account</button>
-      {/if}
+    <div class="date">
+      <p><b>{today}</b><br/>Today’s Paper</p>
     </div>
 
-    <!-- date on the left (CSS positions it) -->
-    <div class="date"><p><b>{today}</b><br/>Today’s Paper</p></div>
+    <img class="logo" src="/NYTimeslogo.png" alt="The New York Times" />
 
-    <!-- NYT logo -->
-    <img src="/NYTimeslogo.png" alt="The New York Times" class="logo"/>
+    <div class="top-right">
+      {#if !loggedIn()}
+        <button class="button" on:click={redirectToDex}>Log in</button>
+      {:else}
+        <button class="acct-btn" on:click={() => showAcct = true}>Account</button>
+      {/if}
+    </div>
   </header>
 
-  <!-- account panel -->
-  {#if showAccountTab}
-    <aside class="sidebar">
-      <h3>Signed in</h3>
-      <p>{email}</p>
-      <button class="button" on:click={()=>window.location.href='/logout'}>Logout</button>
+  <!-- ───── Account drawer ───── -->
+  {#if showAcct}
+    <div class="overlay" on:click={() => showAcct = false}></div>
+    <aside class="acct-drawer">
+      <button class="close" on:click={() => showAcct = false}>×</button>
+      <p class="acct-email"><b>{email}</b></p>
+      <p class="greeting">Good&nbsp;afternoon.</p>
+      <button class="logout" on:click={() => window.location.href='/logout'}>Log&nbsp;out</button>
     </aside>
   {/if}
 
-  <!-- ─── content grid / comments (identical to earlier build) ─── -->
-  {#if loadError}<p class="err">{loadError}</p>
-  {:else if !imageArticles.length}<p class="loading">Loading articles…</p>
+  <!-- ───── Body ───── -->
+  {#if loadError}
+    <p class="err">{loadError}</p>
+  {:else if !imageArticles.length}
+    <p class="loading">Loading articles…</p>
   {:else}
     <div class="main-container">
-      <!-- LEFT -->
+      <!-- left -->
       <div class="left-column">
-        {#each [2,3] as i}{#if imageArticles[i]}
-          {@const art=imageArticles[i]}
-          <article class="card small">
-            <img src={getImage(art)} alt={art.headline.main} on:click={() => openDrawer(art._id)}/>
-            <h2>{art.headline.main}</h2><p>{art.abstract}</p>
-            <button class="count-btn" on:click={()=>openDrawer(art._id)}>
-              💬 {comments[art._id]?.length||0}
-            </button>
-          </article>{/if}{/each}
+        {#each [2,3] as idx}
+          {#if imageArticles[idx]}
+            {@const art=imageArticles[idx]}
+            <article class="card">
+              <img src={getImage(art)} alt={art.headline.main} on:click={() => openDrawer(art._id)} />
+              <h2>{art.headline.main}</h2>
+              <p>{art.abstract}</p>
+              <button class="count-btn" on:click={() => openDrawer(art._id)}>
+                💬 {comments[art._id]?.length || 0}
+              </button>
+            </article>
+          {/if}
+        {/each}
       </div>
 
-      <!-- MID -->
+      <!-- mid -->
       <div class="mid-column">
-        {#if imageArticles[0]}{@const art=imageArticles[0]}
+        {#if imageArticles[0]}
+          {@const art=imageArticles[0]}
           <article class="card lead">
-            <img src={getImage(art)} alt={art.headline.main} on:click={()=>openDrawer(art._id)}/>
-            <h1>{art.headline.main}</h1><p>{art.abstract}</p>
-            <button class="count-btn" on:click={()=>openDrawer(art._id)}>
-              💬 {comments[art._id]?.length||0}
+            <img src={getImage(art)} alt={art.headline.main} on:click={() => openDrawer(art._id)} />
+            <h1>{art.headline.main}</h1>
+            <p>{art.abstract}</p>
+            <button class="count-btn" on:click={() => openDrawer(art._id)}>
+              💬 {comments[art._id]?.length || 0}
             </button>
-          </article>{/if}
+          </article>
+        {/if}
 
-        {#if imageArticles[1]}{@const art=imageArticles[1]}
+        {#if imageArticles[1]}
+          {@const art=imageArticles[1]}
           <article class="card medium">
-            <img src={getImage(art)} alt={art.headline.main} on:click={()=>openDrawer(art._id)}/>
-            <h3>{art.headline.main}</h3><p>{art.abstract}</p>
-            <button class="count-btn" on:click={()=>openDrawer(art._id)}>
-              💬 {comments[art._id]?.length||0}
+            <img src={getImage(art)} alt={art.headline.main} on:click={() => openDrawer(art._id)} />
+            <h3>{art.headline.main}</h3>
+            <p>{art.abstract}</p>
+            <button class="count-btn" on:click={() => openDrawer(art._id)}>
+              💬 {comments[art._id]?.length || 0}
             </button>
-          </article>{/if}
+          </article>
+        {/if}
       </div>
 
-      <!-- RIGHT -->
+      <!-- right -->
       <div class="right-column">
-        {#each [5,7] as i}{#if imageArticles[i]}
-          {@const art=imageArticles[i]}
-          <article class="card small">
-            <img src={getImage(art)} alt={art.headline.main} on:click={()=>openDrawer(art._id)}/>
-            <h2>{art.headline.main}</h2><p>{art.abstract}</p>
-            <button class="count-btn" on:click={()=>openDrawer(art._id)}>
-              💬 {comments[art._id]?.length||0}
-            </button>
-          </article>{/if}{/each}
+        {#each [5,7] as idx}
+          {#if imageArticles[idx]}
+            {@const art=imageArticles[idx]}
+            <article class="card">
+              <img src={getImage(art)} alt={art.headline.main} on:click={() => openDrawer(art._id)} />
+              <h2>{art.headline.main}</h2>
+              <p>{art.abstract}</p>
+              <button class="count-btn" on:click={() => openDrawer(art._id)}>
+                💬 {comments[art._id]?.length || 0}
+              </button>
+            </article>
+          {/if}
+        {/each}
       </div>
     </div>
   {/if}
 
-  <!-- comment drawers (unchanged) -->
+  <!-- ───── Comment drawers ───── -->
   {#each Object.keys(drawerOpen) as aid (aid)}
     {#if drawerOpen[aid]}
-      <div class="overlay" on:click={()=>closeDrawer(aid)}/>
+      <div class="overlay" on:click={() => closeDrawer(aid)}></div>
       <aside class="drawer">
-        <button class="close" on:click={()=>closeDrawer(aid)}>×</button>
-        <h2>Comments ({comments[aid]?.length||0})</h2>
+        <button class="close" on:click={() => closeDrawer(aid)}>×</button>
+        <h2>{imageArticles.find(a=>a._id===aid)?.headline?.main || 'Comments'} ({comments[aid]?.length || 0})</h2>
 
-        <textarea rows="3" bind:value={newTop[aid]} placeholder="Share your thoughts…"/>
-        <button class="post" on:click={()=>post(aid,null,newTop[aid])}>Post</button>
+        <div class="new-box">
+          <textarea
+            rows="2"
+            bind:value={newTop[aid]}
+            placeholder="Add a public comment…"
+            disabled={!loggedIn()}>
+          </textarea>
+          <button
+            class="post"
+            disabled={!loggedIn()}
+            on:click={() => post(aid,null,newTop[aid])}>
+            Post
+          </button>
+        </div>
 
         {#if comments[aid]?.length}
           {#each comments[aid] as c (c.id)}
-            <Comment comment={c} articleId={aid} depth={0}
-                     doDelete={(id)=>del(id,aid)}
-                     doReply ={(id,send)=>reply(aid,id,send)}
-                     {replyOpen} {replyBox}/>
+            <Comment
+              {c}
+              articleId={aid}
+              depth={0}
+              doDelete={(id)=>handleDelete(id,aid)}
+              doReply ={(id,send)=>handleReply(aid,id,send)}
+              {replyOpen} {replyBox} />
           {/each}
         {:else}
           <p class="none">No comments yet</p>
