@@ -2,12 +2,10 @@
   import { onMount } from 'svelte';
   import Comment from './Comment.svelte';
 
-  /* ---------- article loading ---------- */
   let today = '';
   let imageArticles: any[] = [];
   let loadError = '';
 
-  // Auth / account drawer state
   let showAcct = false;
   let email: string | null = '';
   const loggedIn = () => !!email;                         
@@ -23,7 +21,6 @@
   const replyOpen:Record<string, boolean>   = {};
   const replyBox: Record<string, string>    = {};
 
-  // For showing comment counts on the home page
   let commentCounts: Record<string, number> = {};
 
   function getImage(a: any): string | null {
@@ -32,29 +29,22 @@
     return null;
   }
 
-  /* ---------- Dex helpers (UNCHANGED) ---------- */
   function redirectToDex() {
     window.location.href = 'http://localhost:8000/login';
   }
 
-  /* ---------- lifecycle ---------- */
   onMount(async () => {
-    // date
     today = new Date().toLocaleDateString('en-US',
       { weekday:'long', month:'long', day:'numeric', year:'numeric' });
 
-    // email comes back from backend redirect (?user=…)
     const url = new URL(window.location.href);
     email = url.searchParams.get('user');
 
-
-    // news
     try {
       const r = await fetch('/api/local-news', { credentials:'include' });
       const j = await r.json();
       imageArticles = (j.response?.docs || []).filter(getImage);
       
-      // After loading articles, fetch comment counts for all articles
       if (imageArticles.length > 0 && loggedIn()) {
         await Promise.all(imageArticles.map(async (article) => {
           if (article._id) {
@@ -63,7 +53,6 @@
         }));
       }
       
-      // Check for any article ID in localStorage to pre-load comments
       const lastOpenDrawer = localStorage.getItem('openArticleDrawer');
       if (lastOpenDrawer && loggedIn()) {
         drawerOpen[lastOpenDrawer] = true;
@@ -75,7 +64,6 @@
     }
   });
 
-  /* ---------- comments CRUD ---------- */
   async function fetchCommentCount(aid: string) {
     try {
       const safe = encodeURIComponent(aid);
@@ -83,7 +71,6 @@
       
       if (r.ok) {
         const commentsData = await r.json();
-        // Count total comments (including nested ones)
         const countNestedComments = (comments: any[]): number => {
           let count = comments.length;
           for (const comment of comments) {
@@ -111,7 +98,6 @@
         const commentsData = await r.json();
         comments[aid] = commentsData;
         
-        // Update comment count as well
         const countNestedComments = (comments: any[]): number => {
           let count = comments.length;
           for (const comment of comments) {
@@ -150,16 +136,13 @@
       });
       
       if (r.ok) {
-        // Clear the input field
         if (parentId) {
           replyBox[parentId] = '';
-          // Close reply form after successful post
           replyOpen[parentId] = false;
         } else {
           newTop[aid] = '';
         }
         
-        // Refresh comments
         await fetchComments(aid);
       } else {
         console.error(`Error posting comment: ${r.status}`);
@@ -190,25 +173,48 @@
       alert('Failed to delete comment. Please try again.');
     }
   }
+
+  async function handleRedact(cid: string, aid: string) {
+    const selection = window.getSelection();
+    const selectedText = selection ? selection.toString() : '';
+
+    if (!selectedText) return;
+    if (!confirm(`Redact selected text: "${selectedText}"?`)) return;
+
+    try {
+      const res = await fetch(`/api/comments/${cid}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ textToRedact: selectedText, authorId: aid }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Server responded with status ${res.status}`);
+      }
+
+      window.location.reload();
+    } catch (error) {
+      console.error("Failed to redact comment:", error);
+      alert("Failed to redact comment. Please try again.");
+    }
+  } 
+
   
   function handleReply(aid: string, cid: string, send = false) {
     if (send) {
       post(aid, cid, replyBox[cid]);
     } else {
-      // Toggle reply form visibility
       replyOpen[cid] = !replyOpen[cid];
-      // Initialize reply box if not already set
       if (!replyBox[cid]) {
         replyBox[cid] = '';
       }
     }
   }
 
-  /* ---------- drawer helpers ---------- */
+
   function openDrawer(aid: string) {
-    if (!loggedIn()) return;          // gate: only logged-in users
-    
-    // Close any other open drawers first
+    if (!loggedIn()) return;         
+
     Object.keys(drawerOpen).forEach(key => {
       if (drawerOpen[key] && key !== aid) {
         drawerOpen[key] = false;
@@ -217,10 +223,8 @@
     
     drawerOpen[aid] = true;
     
-    // Store the open drawer ID in localStorage
     localStorage.setItem('openArticleDrawer', aid);
     
-    // Fetch comments if not already loaded
     if (!comments[aid]) {
       fetchComments(aid);
     }
@@ -229,7 +233,6 @@
   function closeDrawer(aid: string) {
     drawerOpen[aid] = false;
     
-    // Clear the stored drawer ID when closing
     localStorage.removeItem('openArticleDrawer');
   }
 </script>
@@ -251,7 +254,6 @@
     </div>
   </header>
 
-  <!-- ───── Account drawer ───── -->
   {#if showAcct}
     <div class="overlay" on:click={() => showAcct = false}></div>
     <aside class="acct-drawer">
@@ -263,14 +265,12 @@
     </aside>
   {/if}
 
-  <!-- ───── Body ───── -->
   {#if loadError}
     <p class="err">{loadError}</p>
   {:else if !imageArticles.length}
     <p class="loading">Loading articles…</p>
   {:else}
     <div class="main-container">
-      <!-- left -->
       <div class="left-column">
         {#each [2,3] as idx}
           {#if imageArticles[idx]}
@@ -287,7 +287,6 @@
         {/each}
       </div>
 
-      <!-- mid -->
       <div class="mid-column">
         {#if imageArticles[0]}
           {@const art=imageArticles[0]}
@@ -314,7 +313,6 @@
         {/if}
       </div>
 
-      <!-- right -->
       <div class="right-column">
         {#each [5,7] as idx}
           {#if imageArticles[idx]}
@@ -362,7 +360,6 @@
     </div>
   {/if}
 
-  <!-- ───── Comment drawers ───── -->
   {#each Object.keys(drawerOpen) as aid (aid)}
     {#if drawerOpen[aid]}
       <div class="overlay" on:click={() => closeDrawer(aid)}></div>
@@ -395,6 +392,7 @@
               depth={0}
               doDelete={(id)=>handleDelete(id,aid)}
               doReply={(id,send)=>handleReply(aid,id,send)}
+              doRedact={(id)=>handleRedact(id,aid)}
               {replyOpen} {replyBox} />
           {/each}
         {:else}

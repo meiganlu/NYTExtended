@@ -1,16 +1,3 @@
-"""
-backend/app.py  –  Dex OIDC • Mongo comments • NYT cache
-────────────────────────────────────────────────────────
-Changes in this version
-───────────────────────
-✓ Uses authenticated Mongo connection (reads MONGO_* env-vars)
-✓ Still returns the same JSON and keeps every route & Dex flow
-✓ 30-minute NY Times in-memory cache unchanged
-✓ Handles ObjectId serialization for comment retrieval
-✓ Added moderator capabilities for comment deletion
-✓ Improved error handling for comment operations
-"""
-
 import os, datetime, requests, time
 from functools import wraps
 from dotenv import load_dotenv
@@ -24,25 +11,25 @@ from datetime import timedelta
 
 load_dotenv()
 
-# ─────────────── Flask / CORS ───────────────
+
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.secret_key = os.getenv("FLASK_SECRET", "dev-secret")
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)  # Session lasts 7 days
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)  
 
 CORS(app, supports_credentials=True,
      resources={r"/*": {"origins": ["http://localhost:5173",
                                    "http://127.0.0.1:5173"]}})
 
-# ─────────────── Mongo (auth on) ─────────────
+
 mongo_client = MongoClient(
     "mongodb://mongo:27017",
     username=os.getenv("MONGO_USER", "hw3user"),
     password=os.getenv("MONGO_PASS", "hw3pass"),
     authSource=os.getenv("MONGO_AUTH_DB", "hw3"),
 )
-comments_col = mongo_client.hw3.comments  # same collection name
+comments_col = mongo_client.hw3.comments  
 
-# ─────────────── Dex / OAuth2  ──────────────
+
 DEX_BROWSER  = "http://localhost:5556"
 DEX_INTERNAL = "http://dex:5556"
 
@@ -59,9 +46,9 @@ oauth.register(
     client_kwargs     = {"scope": "openid email profile"},
 )
 
-# ─────────────── NY Times 30-min cache ───────
+
 _cached_nyt = {"data": None, "ts": 0}
-CACHE_TTL   = 60 * 30            # seconds
+CACHE_TTL   = 60 * 30          
 
 
 def nyt_cached(fn):
@@ -77,8 +64,6 @@ def nyt_cached(fn):
         return resp
     return _wrapper
 
-
-# ─────────────── Routes ──────────────────────
 @app.get("/api/local-news")
 @nyt_cached
 def local_news():
@@ -105,20 +90,19 @@ def local_news():
         return jsonify({"error": "NYT upstream error"}), 502
 
 
-# ----- comment helpers -----
 def build_tree(flat):
     """Build a tree structure from flat comment list with proper ID handling"""
     try:
-        # Convert ObjectId to string for JSON serialization
+        
         for c in flat:
             if '_id' in c:
                 c['_id'] = str(c['_id'])
         
-        # Create lookup dictionary with string IDs
+        
         lookup = {str(c["_id"]): {**c, "id": str(c["_id"]), "children": []} for c in flat}
         root = []
         
-        # Build the tree structure
+        
         for c in lookup.values():
             pid = c.get("parent_id")
             if pid and pid in lookup:
@@ -129,7 +113,7 @@ def build_tree(flat):
         return root
     except Exception as e:
         app.logger.error(f"Error building comment tree: {e}")
-        return []  # Return empty array in case of errors
+        return []  
 
 
 @app.get("/api/comments/<path:aid>")
@@ -140,7 +124,7 @@ def get_comments(aid):
         return jsonify(build_tree(comments))
     except Exception as e:
         app.logger.error(f"Error retrieving comments for {aid}: {e}")
-        return jsonify([]), 200  # Return empty array but don't fail
+        return jsonify([]), 200  #
 
 
 @app.post("/api/comments/<path:aid>")
@@ -178,11 +162,11 @@ def delete_comment(cid):
     if "user" not in session:
         return "", 401
 
-    MODERATORS = {"moderator@hw3.com"}          # ← extend as you like
+    MODERATORS = {"moderator@hw3.com"}          
     email = session["user"]["email"]
 
     if email not in MODERATORS:
-        return "", 403                           # not allowed
+        return "", 403                           
 
     try:
         result = comments_col.update_one(
@@ -197,21 +181,57 @@ def delete_comment(cid):
             }
         )
 
-        if result.matched_count == 0:            # CID not found
+        if result.matched_count == 0:            
             return "", 404
 
-        return "", 204                           # success, no body
+        return "", 204                           
     except Exception as err:
         app.logger.exception("moderator-delete failed")
         return "", 500
 
+def apply_redactions(text: str, redacted: list[str]) -> str:
+    for phrase in redacted:
+        block = '█' * len(phrase)
+        text = text.replace(phrase, block)
+    return text
+
+@app.route('/api/comments/<article_id>', methods=['GET'])
+def get_comments(aid):
+    comments = comments_col.find({"article_id": aid})
+    result = []
+    for com in comments:
+        redacted_text = apply_redactions(com["text"], comm.get("redacted", []))
+        result.append({
+            "id": str(com["_id"]),
+            "author": com["author"],
+            "text": redacted_text
+        })
+    return jsonify(result)
+
+@app.route('/api/comments/<comment_id>', methods=['POST'])
+def redact_comment(cid):
+    data = request.json;
+    text_to_redact = data.get('textToRedact')
+
+    comment = comments_col.find_one({"_id": ObjectId(cid)})
+    if not comment:
+        return jsonify({"error": "Comment not found"}), 404
+    
+    redacted = comment.get("redacted", [])
+    if text_to_redact not in redacted:
+        redacted.append(text_to_redact)
+    
+    comments_col.update_one(
+        {"_id": ObjectId(cid)},
+        {"$set": {"redacted": redacted}}
+    )
+    return jsonify({"success": True})
 
 
-# ----- OIDC flow -----
 @app.get("/login")
 def login():
     session["nonce"] = generate_token()
-    session.permanent = True  # Make the session last longer
+    session.permanent = True  #
     return oauth.dex.authorize_redirect(
         redirect_uri="http://localhost:8000/authorize",
         nonce=session["nonce"]
@@ -232,8 +252,6 @@ def logout():
     session.clear()
     return redirect("http://localhost:5173")
 
-
-# ----- SPA fall-through (prod build) -----
 @app.get("/")
 @app.get("/<path:path>")
 def spa(path=""):

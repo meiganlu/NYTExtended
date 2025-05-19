@@ -32,7 +32,6 @@ p {
   padding: 2% 0;
 }
 
-/* ─── HEADER  ▸ date aligns with logo baseline ───── */
 .site-header {
   display: flex;
   justify-content: center;
@@ -64,9 +63,9 @@ p {
 .main-container {
   display: grid;
   grid-template-columns: 2fr 3fr 2fr;
-  column-gap: 2rem;      /* replaces justify-content:space-between */
-  max-width: 100%;      /* let the grid span the whole viewport   */
-  padding: 0 1rem;    /* subtle edge breathing-room            */
+  column-gap: 2rem;     
+  max-width: 100%;     
+  padding: 0 1rem;    
   margin: 0 auto;
 }
 
@@ -191,7 +190,6 @@ p {
   cursor: pointer;
 }
 
-/* ─── ACCOUNT BUTTON & SIDEBAR ───────────────────── */
 .top-right {
   position: absolute;
   right: 1rem;
@@ -213,7 +211,6 @@ p {
 
 .button:hover { background: #326891; }
 
-/* account side-tab */
 .sidebar {
   position: fixed;
   top: 0;
@@ -260,7 +257,7 @@ p {
 }
 
 .acct-btn::after {
-  content: "▾";  /* downward arrow */
+  content: "▾"; 
   font-size: 0.9rem;
 }
 
@@ -318,7 +315,6 @@ hr {
   display: none;
 }
 
-/* Tablet ≤ 1024 px */
 @media (max-width : 1024px) {
 
   .main-container {
@@ -328,16 +324,26 @@ hr {
     padding               : 0 1rem;
   }
 
-  .mid-column   { grid-column : 1; grid-row : 1; }
-  .side-columns { display : block; grid-column : 2; grid-row : 1; padding : 4% 0 0 7%; }
-  .side-columns img { width : 100%; height : auto; }
+  .mid-column   {
+    grid-column : 1; 
+    grid-row : 1; 
+  }
+  .side-columns { 
+    display : block; 
+    grid-column : 2; 
+    grid-row : 1; 
+    padding : 4% 0 0 7%; 
+  }
+  .side-columns img { 
+    width : 100%; 
+    height : auto; 
+  }
 
   .left-column,
   .right-column,
   .date { display : none; }
 }
 
-/* Mobile ≤ 768 px */
 @media (max-width : 768px) {
 
   .main-container {
@@ -354,12 +360,20 @@ hr {
     border      : none;
   }
 
-  .left-column  { display : grid; grid-row : 2; }
-  .right-column { display : grid; grid-row : 3; }
+  .left-column  { 
+    display : grid; grid-row : 2; 
+  }
+  .right-column { 
+    display : grid; 
+    grid-row : 3; 
+  }
 
   .side-columns,
   .date { display : none; }
 
-  .site-header { margin : 1.5rem 0 1rem; height : auto; }
+  .site-header { 
+    margin : 1.5rem 0 1rem; 
+    height : auto; 
+  }
 }
 
