@@ -170,32 +170,41 @@ def post_comment(aid):
 
 @app.delete("/api/comments/<cid>")
 def delete_comment(cid):
-    """Delete a comment - either your own or any if you're a moderator"""
+    """
+    Soft-delete a comment.
+    • Only accounts in MODERATORS may do it.
+    • The document stays in Mongo so the UI can still render the thread.
+    """
     if "user" not in session:
         return "", 401
-    
+
+    MODERATORS = {"moderator@hw3.com"}          # ← extend as you like
+    email = session["user"]["email"]
+
+    if email not in MODERATORS:
+        return "", 403                           # not allowed
+
     try:
-        user_email = session["user"]["email"]
-        # Check if user is moderator (add your moderator emails here)
-        is_moderator = user_email in ["admin@hw3.com", "moderator@hw3.com"] 
-        
-        if is_moderator:
-            # Moderators can delete any comment
-            result = comments_col.delete_one({"_id": ObjectId(cid)})
-        else:
-            # Regular users can only delete their own comments
-            result = comments_col.delete_one({
-                "_id": ObjectId(cid),
-                "user_name": user_email
-            })
-        
-        if result.deleted_count == 0:
-            return "", 404  # Comment not found or not authorized
-        
-        return "", 204
-    except Exception as e:
-        app.logger.error(f"Error deleting comment: {e}")
+        result = comments_col.update_one(
+            {"_id": ObjectId(cid)},
+            {
+                "$set": {
+                    "content": "comment was removed by moderator",
+                    "deleted": True,
+                    "deleted_at": datetime.datetime.utcnow(),
+                    "deleted_by": email,
+                }
+            }
+        )
+
+        if result.matched_count == 0:            # CID not found
+            return "", 404
+
+        return "", 204                           # success, no body
+    except Exception as err:
+        app.logger.exception("moderator-delete failed")
         return "", 500
+
 
 
 # ----- OIDC flow -----

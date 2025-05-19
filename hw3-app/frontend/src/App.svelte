@@ -10,9 +10,8 @@
   // Auth / account drawer state
   let showAcct = false;
   let email: string | null = '';
-  const loggedIn = () => !!email;          // helper
+  const loggedIn = () => !!email;                         
 
-  /* ---------- comment system ---------- */
   type CommentT = {
     id: string; content: string; user_name: string;
     created_at: string; children?: CommentT[];
@@ -47,6 +46,7 @@
     // email comes back from backend redirect (?user=…)
     const url = new URL(window.location.href);
     email = url.searchParams.get('user');
+
 
     // news
     try {
@@ -235,7 +235,6 @@
 </script>
 
 <main>
-  <!-- ───── Header ───── -->
   <header class="site-header">
     <div class="date">
       <p><b>{today}</b><br/>Today's Paper</p>
@@ -258,7 +257,8 @@
     <aside class="acct-drawer">
       <button class="close" on:click={() => showAcct = false}>×</button>
       <p class="acct-email"><b>{email}</b></p>
-      <p class="greeting">Good&nbsp;afternoon.</p>
+      <hr>
+      <h2 class="greeting">Good&nbsp;afternoon.</h2>
       <button class="logout" on:click={() => window.location.href='/logout'}>Log&nbsp;out</button>
     </aside>
   {/if}
@@ -330,6 +330,35 @@
           {/if}
         {/each}
       </div>
+
+      <div class="side-columns">
+        {#each [2,3] as idx}
+          {#if imageArticles[idx]}
+            {@const art=imageArticles[idx]}
+            <article class="card">
+              <img src={getImage(art)} alt={art.headline.main} on:click={() => openDrawer(art._id)} />
+              <h2>{art.headline.main}</h2>
+              <p>{art.abstract}</p>
+              <button class="count-btn" on:click={() => openDrawer(art._id)}>
+                💬 {commentCounts[art._id] || 0}
+              </button>
+            </article>
+          {/if}
+        {/each}
+        {#each [5,7] as idx}
+          {#if imageArticles[idx]}
+            {@const art=imageArticles[idx]}
+            <article class="card">
+              <img src={getImage(art)} alt={art.headline.main} on:click={() => openDrawer(art._id)} />
+              <h2>{art.headline.main}</h2>
+              <p>{art.abstract}</p>
+              <button class="count-btn" on:click={() => openDrawer(art._id)}>
+                💬 {commentCounts[art._id] || 0}
+              </button>
+            </article>
+          {/if}
+        {/each}
+      </div>
     </div>
   {/if}
 
@@ -339,13 +368,15 @@
       <div class="overlay" on:click={() => closeDrawer(aid)}></div>
       <aside class="drawer">
         <button class="close" on:click={() => closeDrawer(aid)}>×</button>
-        <h2>{imageArticles.find(a=>a._id===aid)?.headline?.main || 'Comments'} ({commentCounts[aid] || 0})</h2>
-
+        <h2><strong>{imageArticles.find(a=>a._id===aid)?.headline?.main}</strong></h2>
+        <hr>
+        
         <div class="new-box">
+          <h1> Comments {commentCounts[aid] || 0} </h1>
           <textarea
             rows="2"
             bind:value={newTop[aid]}
-            placeholder="Add a public comment…"
+            placeholder="Share your thoughts."
             disabled={!loggedIn()}>
           </textarea>
           <button
